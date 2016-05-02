@@ -164,6 +164,7 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 	rmp->endpoint     = m_ptr->SCHEDULING_ENDPOINT;
 	rmp->parent       = m_ptr->SCHEDULING_PARENT;
 	rmp->max_priority = (unsigned) m_ptr->SCHEDULING_MAXPRIO;
+	rmp->procgrp	  = (pid_t) m_ptr->SCHEDULING_PROCGRP;
 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
 		return EINVAL;
 	}
