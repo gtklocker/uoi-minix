@@ -12,8 +12,8 @@
  *				sched_inherit				     *
  *===========================================================================*/
 PUBLIC int sched_inherit(endpoint_t scheduler_e, 
-	endpoint_t schedulee_e, endpoint_t parent_e, unsigned maxprio, 
-	endpoint_t *newscheduler_e)
+	endpoint_t schedulee_e, endpoint_t parent_e, pid_t procgrp,
+	unsigned maxprio, endpoint_t *newscheduler_e)
 {
 	int rv;
 	message m;
@@ -24,10 +24,11 @@ PUBLIC int sched_inherit(endpoint_t scheduler_e,
 	assert(maxprio >= 0);
 	assert(maxprio < NR_SCHED_QUEUES);
 	assert(newscheduler_e);
-	
+
 	m.SCHEDULING_ENDPOINT	= schedulee_e;
 	m.SCHEDULING_PARENT	= parent_e;
 	m.SCHEDULING_MAXPRIO	= (int) maxprio;
+	m.SCHEDULING_PROCGRP	= (int) procgrp;
 
 	/* Send the request to the scheduler */
 	if ((rv = _taskcall(scheduler_e, SCHEDULING_INHERIT, &m))) {
