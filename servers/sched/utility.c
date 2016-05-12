@@ -73,3 +73,38 @@ PUBLIC int accept_message(message *m_ptr)
 	/* no other messages are allowable */
 	return 0;
 }
+
+/*===========================================================================*
+ *				get_group_usage				     *
+ *===========================================================================*/
+PUBLIC unsigned get_group_usage(pid_t procgrp) {
+	int proc_nr_n;
+	struct schedproc *rmm;
+
+	for (proc_nr_n = 0, rmm = schedproc; proc_nr_n < NR_PROCS; proc_nr_n++, rmm++) {
+		if (rmm->procgrp == procgrp) {
+			return rmm->grp_usage;
+		}
+	}
+
+	return 0;
+}
+
+/*===========================================================================*
+ *				get_groups_nr				     *
+ *===========================================================================*/
+PUBLIC unsigned get_groups_nr(void) {
+	int proc_nr_n;
+	struct schedproc *rmm;
+	char groups[NR_PROCS] = { 0 };
+	unsigned ret = 0;
+
+	for (proc_nr_n = 0, rmm = schedproc; proc_nr_n < NR_PROCS; proc_nr_n++, rmm++) {
+		if (rmm->flags & IN_USE && !groups[rmm->procgrp]) {
+			groups[rmm->procgrp] = 1;
+			++ret;
+		}
+	}
+
+	return ret;
+}

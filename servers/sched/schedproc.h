@@ -24,7 +24,12 @@ EXTERN struct schedproc {
 	endpoint_t endpoint;	/* process endpoint id */
 	endpoint_t parent;	/* parent endpoint id */
 	unsigned flags;		/* flag bits */
+
+	/* Fair scheduling */
 	pid_t procgrp;		/* process group */
+	unsigned proc_usage;
+	unsigned grp_usage;
+	unsigned fss_priority;
 
 	/* User space scheduling */
 	unsigned max_priority;	/* this process' highest allowed priority */

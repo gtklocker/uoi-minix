@@ -33,6 +33,8 @@ FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
 		SCHEDULE_CHANGE_CPU		\
 		)
 
+#define SCHEDULE_FSS_BASE 	0
+
 #define schedule_process_local(p)	\
 	schedule_process(p, SCHEDULE_CHANGE_PRIO | SCHEDULE_CHANGE_QUANTUM)
 #define schedule_process_migrate(p)	\
@@ -210,6 +212,15 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 
 		rmp->priority = schedproc[parent_nr_n].priority;
 		rmp->time_slice = schedproc[parent_nr_n].time_slice;
+		
+		/* fair scheduling */
+		rmp->proc_usage = 0;
+		rmp->grp_usage = get_group_usage(rmp->procgrp);
+
+		rmp->fss_priority = (rmp->proc_usage / 2) + 
+			(rmp->grp_usage * get_groups_nr() / 4) +
+			SCHEDULE_FSS_BASE;
+
 		break;
 		
 	default: 

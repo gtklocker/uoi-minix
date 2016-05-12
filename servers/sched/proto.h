@@ -20,3 +20,5 @@ _PROTOTYPE( int no_sys, (int who_e, int call_nr)			);
 _PROTOTYPE( int sched_isokendpt, (int ep, int *proc)			);
 _PROTOTYPE( int sched_isemtyendpt, (int ep, int *proc)			);
 _PROTOTYPE( int accept_message, (message *m_ptr)			);
+_PROTOTYPE( unsigned get_group_usage, (pid_t procgrp)			);
+_PROTOTYPE( unsigned get_groups_nr, (void)				);
