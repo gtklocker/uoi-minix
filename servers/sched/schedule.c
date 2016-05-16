@@ -93,7 +93,8 @@ PRIVATE void pick_cpu(struct schedproc * proc)
 PUBLIC int do_noquantum(message *m_ptr)
 {
 	register struct schedproc *rmp;
-	int rv, proc_nr_n;
+	struct schedproc *rmm;
+	int rv, proc_nr_n, other_nr_n;
 
 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
@@ -104,6 +105,17 @@ PUBLIC int do_noquantum(message *m_ptr)
 	rmp = &schedproc[proc_nr_n];
 	if (rmp->priority < MIN_USER_Q) {
 		rmp->priority += 1; /* lower priority */
+	}
+
+	rmp->proc_usage += rmp->time_slice;
+
+	for (other_nr_n = 0, rmm = schedproc; other_nr_n < NR_PROCS; other_nr_n++, rmm++) {
+		if (rmm->procgrp == rmp->procgrp) {
+			rmm->grp_usage += rmp->time_slice;
+		}
+		rmm->fss_priority = (rmm->proc_usage / 2) + 
+			(rmm->grp_usage * get_groups_nr() / 4) +
+			SCHEDULE_FSS_BASE;
 	}
 
 	if ((rv = schedule_process_local(rmp)) != OK) {
