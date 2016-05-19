@@ -616,10 +616,14 @@ PUBLIC void kernel_call_resume(struct proc *caller)
 PUBLIC int sched_proc(struct proc *p,
 			int priority,
 			int quantum,
-			int cpu)
+			int cpu,
+			int fss_priority)
 {
 	/* Make sure the values given are within the allowed range.*/
 	if ((priority < TASK_Q && priority != -1) || priority > NR_SCHED_QUEUES)
+		return(EINVAL);
+
+	if (fss_priority < 0 && fss_priority != -1)
 		return(EINVAL);
 
 	if (quantum < 1 && quantum != -1)
@@ -656,6 +660,8 @@ PUBLIC int sched_proc(struct proc *p,
 
 	if (priority != -1)
 		p->p_priority = priority;
+	if (fss_priority != -1)
+		p->p_fss_priority = fss_priority;
 	if (quantum != -1) {
 		p->p_quantum_size_ms = quantum;
 		p->p_cpu_time_left = ms_2_cpu_time(quantum);

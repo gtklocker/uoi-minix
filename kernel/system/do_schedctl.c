@@ -34,7 +34,7 @@ PUBLIC int do_schedctl(struct proc * caller, message * m_ptr)
 		cpu = (int) m_ptr->SCHEDCTL_CPU;
 
 		/* Try to schedule the process. */
-		if((r = sched_proc(p, priority, quantum, cpu) != OK))
+		if((r = sched_proc(p, priority, quantum, cpu, -1) != OK))
 			return r;
 		p->p_scheduler = NULL;
 	} else {

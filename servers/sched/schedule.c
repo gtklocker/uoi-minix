@@ -23,14 +23,16 @@ FORWARD _PROTOTYPE( int schedule_process, (struct schedproc * rmp,
 			unsigned flags));
 FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
 
-#define SCHEDULE_CHANGE_PRIO	0x1
-#define SCHEDULE_CHANGE_QUANTUM	0x2
-#define SCHEDULE_CHANGE_CPU	0x4
+#define SCHEDULE_CHANGE_PRIO		0x1
+#define SCHEDULE_CHANGE_QUANTUM		0x2
+#define SCHEDULE_CHANGE_CPU		0x4
+#define SCHEDULE_CHANGE_FSS_PRIO	0x8
 
 #define SCHEDULE_CHANGE_ALL	(	\
 		SCHEDULE_CHANGE_PRIO	|	\
 		SCHEDULE_CHANGE_QUANTUM	|	\
-		SCHEDULE_CHANGE_CPU		\
+		SCHEDULE_CHANGE_CPU	|	\
+		SCHEDULE_CHANGE_FSS_PRIO	\
 		)
 
 #define SCHEDULE_FSS_BASE 	0
@@ -48,6 +50,8 @@ FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
 
 /* processes created by RS are sysytem processes */
 #define is_system_proc(p)	((p)->parent == RS_PROC_NR)
+
+#define is_fss_proc(p)		((p)->procgrp != -1 && (p)->flags & IN_USE)
 
 PRIVATE unsigned cpu_proc[CONFIG_MAX_CPUS];
 
@@ -107,19 +111,34 @@ PUBLIC int do_noquantum(message *m_ptr)
 		rmp->priority += 1; /* lower priority */
 	}
 
+	if ((rv = schedule_process_local(rmp)) != OK) {
+		return rv;
+	}
+
+	if (!is_fss_proc(rmp)) {
+		return OK;
+	}
+
+	// fair scheduler
 	rmp->proc_usage += rmp->time_slice;
 
 	for (other_nr_n = 0, rmm = schedproc; other_nr_n < NR_PROCS; other_nr_n++, rmm++) {
+		if (!is_fss_proc(rmm)) {
+			continue;
+		}
+
 		if (rmm->procgrp == rmp->procgrp) {
 			rmm->grp_usage += rmp->time_slice;
 		}
 		rmm->fss_priority = (rmm->proc_usage / 2) + 
 			(rmm->grp_usage * get_groups_nr() / 4) +
 			SCHEDULE_FSS_BASE;
-	}
 
-	if ((rv = schedule_process_local(rmp)) != OK) {
-		return rv;
+		if ((rv = schedule_process(rmm, SCHEDULE_CHANGE_FSS_PRIO)) != OK) {
+			printf("SCHED: WARNING: failed to schedule %d (new fss_prio %u): %d\n",
+				rmm->endpoint, rmm->fss_priority, rv);
+			return rv;
+		}
 	}
 	return OK;
 }
@@ -178,7 +197,10 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 	rmp->endpoint     = m_ptr->SCHEDULING_ENDPOINT;
 	rmp->parent       = m_ptr->SCHEDULING_PARENT;
 	rmp->max_priority = (unsigned) m_ptr->SCHEDULING_MAXPRIO;
-	rmp->procgrp	  = (pid_t) m_ptr->SCHEDULING_PROCGRP;
+
+	// indicator that we should not fairly schedule this
+	rmp->procgrp      = -1;
+
 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
 		return EINVAL;
 	}
@@ -221,6 +243,9 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 		if ((rv = sched_isokendpt(m_ptr->SCHEDULING_PARENT,
 				&parent_nr_n)) != OK)
 			return rv;
+
+		// indicator that we should fairly schedule this
+		rmp->procgrp = (pid_t) m_ptr->SCHEDULING_PROCGRP;
 
 		rmp->priority = schedproc[parent_nr_n].priority;
 		rmp->time_slice = schedproc[parent_nr_n].time_slice;
@@ -324,7 +349,7 @@ PUBLIC int do_nice(message *m_ptr)
 PRIVATE int schedule_process(struct schedproc * rmp, unsigned flags)
 {
 	int err;
-	int new_prio, new_quantum, new_cpu;
+	int new_prio, new_quantum, new_cpu, new_fss_prio;
 
 	pick_cpu(rmp);
 
@@ -343,8 +368,13 @@ PRIVATE int schedule_process(struct schedproc * rmp, unsigned flags)
 	else
 		new_cpu = -1;
 
+	if (flags & SCHEDULE_CHANGE_FSS_PRIO)
+		new_fss_prio = rmp->fss_priority;
+	else
+		new_fss_prio = -1;
+
 	if ((err = sys_schedule(rmp->endpoint, new_prio,
-		new_quantum, new_cpu)) != OK) {
+		new_quantum, new_cpu, new_fss_prio)) != OK) {
 		printf("PM: An error occurred when trying to schedule %d: %d\n",
 		rmp->endpoint, err);
 	}
