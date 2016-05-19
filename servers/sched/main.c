@@ -72,6 +72,7 @@ PUBLIC int main(void)
 			break;
 		case SCHEDULING_NO_QUANTUM:
 			/* This message was sent from the kernel, don't reply */
+
 			if (IPC_STATUS_FLAGS_TEST(ipc_status,
 				IPC_FLG_MSG_FROM_KERNEL)) {
 				if ((rv = do_noquantum(&m_in)) != (OK)) {

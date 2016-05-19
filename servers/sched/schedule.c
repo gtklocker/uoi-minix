@@ -11,6 +11,7 @@
 #include "schedproc.h"
 #include <assert.h>
 #include <minix/com.h>
+#include <minix/endpoint.h>
 #include <machine/archtypes.h>
 #include "kernel/proc.h" /* for queue constants */
 
@@ -87,13 +88,38 @@ PRIVATE void pick_cpu(struct schedproc * proc)
 }
 
 /*===========================================================================*
+ *				find_least_fss_priority		     	     *
+ *===========================================================================*/
+PRIVATE struct schedproc* find_least_fss_priority() {
+	struct schedproc *rmp, *rmfss = NULL;
+	int proc_nr;
+	int min_fss = -1;
+
+	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
+		if (rmp->flags & IN_USE &&
+			rmp->procgrp >= 0 &&
+			rmp->priority >= MAX_USER_Q && rmp->priority <= MIN_USER_Q &&
+			(min_fss < 0 || min_fss > rmp->fss_priority)) {
+			rmfss = rmp;
+			min_fss = rmp->fss_priority;
+		}
+	}
+
+	if (rmfss == NULL) {
+		printf("find_least_fss_priority failed!\n");
+	}
+
+	return rmfss;
+}
+
+/*===========================================================================*
  *				do_noquantum				     *
  *===========================================================================*/
 
 PUBLIC int do_noquantum(message *m_ptr)
 {
 	register struct schedproc *rmp;
-	struct schedproc *rmm;
+	struct schedproc *rmm, *rmfss;
 	int rv, proc_nr_n, other_nr_n;
 
 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
@@ -107,6 +133,18 @@ PUBLIC int do_noquantum(message *m_ptr)
 		rmp->priority += 1; /* lower priority */
 	}
 
+/*
+	// TODO: remove this
+	printf("[noquantum] {proc: %d, procgrp: %d, proc_usage: %u, grp_usage: %u, fss_priority: %u, time_slice: %u, get_groups_nr: %u}\n", 
+		_ENDPOINT_P(rmp->endpoint), 
+		rmp->procgrp,
+		rmp->proc_usage,
+		rmp->grp_usage,
+		rmp->fss_priority,
+		rmp->time_slice,
+		get_groups_nr());
+*/
+
 	rmp->proc_usage += rmp->time_slice;
 
 	for (other_nr_n = 0, rmm = schedproc; other_nr_n < NR_PROCS; other_nr_n++, rmm++) {
@@ -118,9 +156,28 @@ PUBLIC int do_noquantum(message *m_ptr)
 			SCHEDULE_FSS_BASE;
 	}
 
-	if ((rv = schedule_process_local(rmp)) != OK) {
+	rmfss = find_least_fss_priority();
+	printf("proc %d has least priority (prio: %u) ", _ENDPOINT_P(rmfss->endpoint), rmfss->priority);
+	if (rmfss != rmp) {
+		printf("different from old %d (prio: %u)\n", _ENDPOINT_P(rmp->endpoint), rmp->priority);
+		rmp->priority = MIN_USER_Q;
+	}
+	else {
+		printf("same as the old one\n");
+	}
+	rmfss->priority = MAX_USER_Q;
+	printf("now set to %u with slice %u (previously %u)\n", rmfss->priority, DEFAULT_USER_TIME_SLICE, rmfss->time_slice);
+	rmfss->time_slice = DEFAULT_USER_TIME_SLICE;
+
+	if ((rv = schedule_process_local(rmfss)) != OK) {
+		printf("scheduling rmfss w/ pid: %d failed\n", _ENDPOINT_P(rmfss->endpoint));
 		return rv;
 	}
+	if ((rv = schedule_process_local(rmp)) != OK) {
+		printf("scheduling old process w/ pid: %d failed\n", _ENDPOINT_P(rmp->endpoint));
+		return rv;
+	}
+
 	return OK;
 }
 
@@ -178,9 +235,14 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 	rmp->endpoint     = m_ptr->SCHEDULING_ENDPOINT;
 	rmp->parent       = m_ptr->SCHEDULING_PARENT;
 	rmp->max_priority = (unsigned) m_ptr->SCHEDULING_MAXPRIO;
-	rmp->procgrp	  = (pid_t) m_ptr->SCHEDULING_PROCGRP;
+	rmp->procgrp = -1; // we may not want to set this
 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
 		return EINVAL;
+	}
+
+	/* TODO: remove this */
+	if (0) {
+		printf("[gtkv2] sched: got process group %d\n", (int)rmp->procgrp);
 	}
 
 	/* Inherit current priority and time slice from parent. Since there
@@ -222,16 +284,30 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 				&parent_nr_n)) != OK)
 			return rv;
 
-		rmp->priority = schedproc[parent_nr_n].priority;
+		//rmp->priority = schedproc[parent_nr_n].priority;
+		rmp->priority = MIN_USER_Q;
 		rmp->time_slice = schedproc[parent_nr_n].time_slice;
 		
 		/* fair scheduling */
+		rmp->procgrp = (pid_t) m_ptr->SCHEDULING_PROCGRP;
 		rmp->proc_usage = 0;
 		rmp->grp_usage = get_group_usage(rmp->procgrp);
 
 		rmp->fss_priority = (rmp->proc_usage / 2) + 
 			(rmp->grp_usage * get_groups_nr() / 4) +
 			SCHEDULE_FSS_BASE;
+
+/*
+		// TODO: remove this
+		printf("[creation] {proc: %d, procgrp: %d, proc_usage: %u, grp_usage: %u, fss_priority: %u, time_slice: %u, get_groups_nr: %u}\n", 
+			_ENDPOINT_P(rmp->endpoint), 
+			rmp->procgrp,
+			rmp->proc_usage,
+			rmp->grp_usage,
+			rmp->fss_priority,
+			rmp->time_slice,
+			get_groups_nr());
+*/
 
 		break;
 		

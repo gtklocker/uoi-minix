@@ -99,10 +99,14 @@ PUBLIC unsigned get_groups_nr(void) {
 	char groups[NR_PROCS] = { 0 };
 	unsigned ret = 0;
 
+	//printf("Counting procgrps\n");
 	for (proc_nr_n = 0, rmm = schedproc; proc_nr_n < NR_PROCS; proc_nr_n++, rmm++) {
-		if (rmm->flags & IN_USE && !groups[rmm->procgrp]) {
+		//if (rmm->priority <= MIN_USER_Q && rmm->priority >= MAX_USER_Q && !groups[rmm->procgrp]) {
+		if (rmm->procgrp >= 0 && !groups[rmm->procgrp]) {
 			groups[rmm->procgrp] = 1;
 			++ret;
+
+			//printf("Counting procgrp %d, %d total\n", rmm->procgrp, ret);
 		}
 	}
 
