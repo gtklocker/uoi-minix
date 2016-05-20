@@ -1,0 +1,3 @@
+#!/bin/sh
+
+clang stress.c -o /tmp/$1stress && /tmp/$1stress $1
