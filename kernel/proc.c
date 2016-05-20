@@ -1716,7 +1716,10 @@ PRIVATE struct proc * pick_proc(void)
  */
   register struct proc *rp;			/* process to run */
   struct proc **rdy_head;
+  struct proc *xp;
+  struct proc *min_fss_p;
   int q;				/* iterate over queues */
+  int min_fss = -1;
 
   /* Check each of the scheduling queues for ready processes. The number of
    * queues is defined in proc.h, and priorities are set in the task table.
@@ -1728,6 +1731,19 @@ PRIVATE struct proc * pick_proc(void)
 		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
 		continue;
 	}
+
+	// pick process with the minimum fss_prio
+	if (q == USER_Q) {
+		for (xp = rdy_head[q]; xp; xp = xp->p_nextready) {
+			if (min_fss == -1 || xp->p_fss_priority < min_fss) {
+				min_fss = xp->p_fss_priority;
+				min_fss_p = xp;
+			}
+		}
+
+		rp = min_fss_p;
+	}
+
 	assert(proc_is_runnable(rp));
 	if (priv(rp)->s_flags & BILLABLE)	 	
 		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
