@@ -1,0 +1,457 @@
+diff --git a/include/minix/com.h b/include/minix/com.h
+index c1c4f6f..5f5ba0e 100644
+--- a/include/minix/com.h
++++ b/include/minix/com.h
+@@ -1126,6 +1126,7 @@
+ #	define SCHEDULING_QUANTUM	m9_l2
+ #	define SCHEDULING_PRIORITY	m9_s1
+ #	define SCHEDULING_CPU		m9_l4
++#	define SCHEDULING_FSS_PRIORITY	m9_l5
+ 
+ /*
+  * SCHEDULING_START uses _ENDPOINT, _PRIORITY and _QUANTUM from
+@@ -1135,6 +1136,7 @@
+ #	define SCHEDULING_SCHEDULER	m9_l1 /* Overrides _ENDPOINT on return*/
+ #	define SCHEDULING_PARENT	m9_l3
+ #	define SCHEDULING_MAXPRIO	m9_l4
++#	define SCHEDULING_PROCGRP	m9_l5
+ 
+ #define SCHEDULING_STOP		(SCHEDULING_BASE+3)
+ 
+diff --git a/include/minix/config.h b/include/minix/config.h
+index 49350a8..b170c4a 100644
+--- a/include/minix/config.h
++++ b/include/minix/config.h
+@@ -75,9 +75,9 @@
+ /* Scheduling priorities. Values must start at zero (highest
+  * priority) and increment.
+  */
+-#define NR_SCHED_QUEUES   16	/* MUST equal minimum priority + 1 */
++#define NR_SCHED_QUEUES    8	/* MUST equal minimum priority + 1 */
+ #define TASK_Q		   0	/* highest, used for kernel tasks */
+-#define MAX_USER_Q  	   0    /* highest priority for user processes */   
++#define MAX_USER_Q  	   7    /* highest priority for user processes */   
+ #define USER_Q  	  ((MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q) /* default
+ 						(should correspond to nice 0) */
+ #define MIN_USER_Q	  (NR_SCHED_QUEUES - 1)	/* minimum priority for user
+diff --git a/include/minix/sched.h b/include/minix/sched.h
+index 8a32e30..b052400 100644
+--- a/include/minix/sched.h
++++ b/include/minix/sched.h
+@@ -8,7 +8,7 @@ _PROTOTYPE(int sched_start, (endpoint_t scheduler_e, endpoint_t schedulee_e,
+ 	endpoint_t parent_e, int maxprio, int quantum, int cpu,
+ 	endpoint_t *newscheduler_e));
+ _PROTOTYPE(int sched_inherit, (endpoint_t scheduler_e, 
+-	endpoint_t schedulee_e, endpoint_t parent_e, unsigned maxprio, 
+-	endpoint_t *newscheduler_e));
++	endpoint_t schedulee_e, endpoint_t parent_e, pid_t procgrp,
++	unsigned maxprio, endpoint_t *newscheduler_e));
+ 
+ #endif /* _MINIX_SCHED_H */
+diff --git a/include/minix/syslib.h b/include/minix/syslib.h
+index 22483fe..4c0d5e7 100644
+--- a/include/minix/syslib.h
++++ b/include/minix/syslib.h
+@@ -45,7 +45,7 @@ _PROTOTYPE( int sys_exit, (void));
+ _PROTOTYPE( int sys_trace, (int req, endpoint_t proc_ep, long addr, long *data_p));
+ 
+ _PROTOTYPE( int sys_schedule, (endpoint_t proc_ep, int priority,
+-						int quantum, int cpu));
++						int quantum, int cpu, int fss_priority));
+ _PROTOTYPE( int sys_schedctl, (unsigned flags, endpoint_t proc_ep,
+ 	int priority, int quantum, int cpu));
+ 
+diff --git a/kernel/proc.c b/kernel/proc.c
+index c83dc29..3915d4f 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -1716,7 +1716,10 @@ PRIVATE struct proc * pick_proc(void)
+  */
+   register struct proc *rp;			/* process to run */
+   struct proc **rdy_head;
++  struct proc *xp;
++  struct proc *min_fss_p;
+   int q;				/* iterate over queues */
++  int min_fss = -1;
+ 
+   /* Check each of the scheduling queues for ready processes. The number of
+    * queues is defined in proc.h, and priorities are set in the task table.
+@@ -1728,6 +1731,19 @@ PRIVATE struct proc * pick_proc(void)
+ 		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
+ 		continue;
+ 	}
++
++	// pick process with the minimum fss_prio
++	if (q == USER_Q) {
++		for (xp = rdy_head[q]; xp; xp = xp->p_nextready) {
++			if (min_fss == -1 || xp->p_fss_priority < min_fss) {
++				min_fss = xp->p_fss_priority;
++				min_fss_p = xp;
++			}
++		}
++
++		rp = min_fss_p;
++	}
++
+ 	assert(proc_is_runnable(rp));
+ 	if (priv(rp)->s_flags & BILLABLE)	 	
+ 		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
+diff --git a/kernel/proc.h b/kernel/proc.h
+index 4f9d075..aab0cd7 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -29,6 +29,7 @@ struct proc {
+   volatile u32_t p_misc_flags;	/* flags that do not suspend the process */
+ 
+   char p_priority;		/* current process priority */
++  unsigned p_fss_priority;	/* fair share scheduling priority */
+   u64_t p_cpu_time_left;	/* time left to use the cpu */
+   unsigned p_quantum_size_ms;	/* assigned time quantum in ms
+ 				   FIXME remove this */
+diff --git a/kernel/proto.h b/kernel/proto.h
+index abe52df..c2c4c7d 100644
+--- a/kernel/proto.h
++++ b/kernel/proto.h
+@@ -94,7 +94,7 @@ _PROTOTYPE( void clear_ipc_refs, (struct proc *rc, int caller_ret)	);
+ _PROTOTYPE( phys_bytes umap_bios, (vir_bytes vir_addr, vir_bytes bytes));
+ _PROTOTYPE( void kernel_call_resume, (struct proc *p));
+ _PROTOTYPE( int sched_proc, (struct proc *rp,
+-	int priority, int quantum, int cpu));
++	int priority, int quantum, int cpu, int fss_priority));
+ 
+ /* system/do_newmap.c */
+ _PROTOTYPE( int newmap, (struct proc * caller, struct proc *rp,
+diff --git a/kernel/system.c b/kernel/system.c
+index 0218f58..204b823 100644
+--- a/kernel/system.c
++++ b/kernel/system.c
+@@ -616,12 +616,16 @@ PUBLIC void kernel_call_resume(struct proc *caller)
+ PUBLIC int sched_proc(struct proc *p,
+ 			int priority,
+ 			int quantum,
+-			int cpu)
++			int cpu,
++			int fss_priority)
+ {
+ 	/* Make sure the values given are within the allowed range.*/
+ 	if ((priority < TASK_Q && priority != -1) || priority > NR_SCHED_QUEUES)
+ 		return(EINVAL);
+ 
++	if (fss_priority < 0 && fss_priority != -1)
++		return(EINVAL);
++
+ 	if (quantum < 1 && quantum != -1)
+ 		return(EINVAL);
+ 
+@@ -656,6 +660,8 @@ PUBLIC int sched_proc(struct proc *p,
+ 
+ 	if (priority != -1)
+ 		p->p_priority = priority;
++	if (fss_priority != -1)
++		p->p_fss_priority = fss_priority;
+ 	if (quantum != -1) {
+ 		p->p_quantum_size_ms = quantum;
+ 		p->p_cpu_time_left = ms_2_cpu_time(quantum);
+diff --git a/kernel/system/do_schedctl.c b/kernel/system/do_schedctl.c
+index b2e4563..8dec030 100644
+--- a/kernel/system/do_schedctl.c
++++ b/kernel/system/do_schedctl.c
+@@ -34,7 +34,7 @@ PUBLIC int do_schedctl(struct proc * caller, message * m_ptr)
+ 		cpu = (int) m_ptr->SCHEDCTL_CPU;
+ 
+ 		/* Try to schedule the process. */
+-		if((r = sched_proc(p, priority, quantum, cpu) != OK))
++		if((r = sched_proc(p, priority, quantum, cpu, -1) != OK))
+ 			return r;
+ 		p->p_scheduler = NULL;
+ 	} else {
+diff --git a/kernel/system/do_schedule.c b/kernel/system/do_schedule.c
+index 436f814..61d5692 100644
+--- a/kernel/system/do_schedule.c
++++ b/kernel/system/do_schedule.c
+@@ -9,7 +9,7 @@ PUBLIC int do_schedule(struct proc * caller, message * m_ptr)
+ {
+ 	struct proc *p;
+ 	int proc_nr;
+-	int priority, quantum, cpu;
++	int priority, quantum, cpu, fss_priority;
+ 
+ 	if (!isokendpt(m_ptr->SCHEDULING_ENDPOINT, &proc_nr))
+ 		return EINVAL;
+@@ -24,6 +24,7 @@ PUBLIC int do_schedule(struct proc * caller, message * m_ptr)
+ 	priority = (int) m_ptr->SCHEDULING_PRIORITY;
+ 	quantum = (int) m_ptr->SCHEDULING_QUANTUM;
+ 	cpu = (int) m_ptr->SCHEDULING_CPU;
++	fss_priority = (int) m_ptr->SCHEDULING_FSS_PRIORITY;
+ 
+-	return sched_proc(p, priority, quantum, cpu);
++	return sched_proc(p, priority, quantum, cpu, fss_priority);
+ }
+diff --git a/lib/libsys/sched_start.c b/lib/libsys/sched_start.c
+index 0f8f240..3b246e1 100644
+--- a/lib/libsys/sched_start.c
++++ b/lib/libsys/sched_start.c
+@@ -12,8 +12,8 @@
+  *				sched_inherit				     *
+  *===========================================================================*/
+ PUBLIC int sched_inherit(endpoint_t scheduler_e, 
+-	endpoint_t schedulee_e, endpoint_t parent_e, unsigned maxprio, 
+-	endpoint_t *newscheduler_e)
++	endpoint_t schedulee_e, endpoint_t parent_e, pid_t procgrp,
++	unsigned maxprio, endpoint_t *newscheduler_e)
+ {
+ 	int rv;
+ 	message m;
+@@ -24,10 +24,11 @@ PUBLIC int sched_inherit(endpoint_t scheduler_e,
+ 	assert(maxprio >= 0);
+ 	assert(maxprio < NR_SCHED_QUEUES);
+ 	assert(newscheduler_e);
+-	
++
+ 	m.SCHEDULING_ENDPOINT	= schedulee_e;
+ 	m.SCHEDULING_PARENT	= parent_e;
+ 	m.SCHEDULING_MAXPRIO	= (int) maxprio;
++	m.SCHEDULING_PROCGRP	= (int) procgrp;
+ 
+ 	/* Send the request to the scheduler */
+ 	if ((rv = _taskcall(scheduler_e, SCHEDULING_INHERIT, &m))) {
+diff --git a/lib/libsys/sys_schedule.c b/lib/libsys/sys_schedule.c
+index f7664c4..ceb3515 100644
+--- a/lib/libsys/sys_schedule.c
++++ b/lib/libsys/sys_schedule.c
+@@ -3,7 +3,8 @@
+ PUBLIC int sys_schedule(endpoint_t proc_ep,
+ 			int priority,
+ 			int quantum,
+-			int cpu)
++			int cpu,
++			int fss_priority)
+ {
+ 	message m;
+ 
+@@ -11,5 +12,6 @@ PUBLIC int sys_schedule(endpoint_t proc_ep,
+ 	m.SCHEDULING_PRIORITY = priority;
+ 	m.SCHEDULING_QUANTUM  = quantum;
+ 	m.SCHEDULING_CPU = cpu;
++	m.SCHEDULING_FSS_PRIORITY = fss_priority;
+ 	return(_kernel_call(SYS_SCHEDULE, &m));
+ }
+diff --git a/servers/pm/schedule.c b/servers/pm/schedule.c
+index e94c20e..6be9a4b 100644
+--- a/servers/pm/schedule.c
++++ b/servers/pm/schedule.c
+@@ -79,6 +79,7 @@ PUBLIC int sched_start_user(endpoint_t ep, struct mproc *rmp)
+ 	return sched_inherit(ep, 			/* scheduler_e */
+ 		rmp->mp_endpoint, 			/* schedulee_e */
+ 		inherit_from, 				/* parent_e */
++		rmp->mp_procgrp,			/* procgrp */
+ 		maxprio, 				/* maxprio */
+ 		&rmp->mp_scheduler);			/* *newsched_e */
+ }
+diff --git a/servers/sched/proto.h b/servers/sched/proto.h
+index fcf59e0..c0bc45b 100644
+--- a/servers/sched/proto.h
++++ b/servers/sched/proto.h
+@@ -20,3 +20,5 @@ _PROTOTYPE( int no_sys, (int who_e, int call_nr)			);
+ _PROTOTYPE( int sched_isokendpt, (int ep, int *proc)			);
+ _PROTOTYPE( int sched_isemtyendpt, (int ep, int *proc)			);
+ _PROTOTYPE( int accept_message, (message *m_ptr)			);
++_PROTOTYPE( unsigned get_group_usage, (pid_t procgrp)			);
++_PROTOTYPE( unsigned get_groups_nr, (void)				);
+diff --git a/servers/sched/schedproc.h b/servers/sched/schedproc.h
+index 69f99e4..8a00af5 100644
+--- a/servers/sched/schedproc.h
++++ b/servers/sched/schedproc.h
+@@ -25,6 +25,12 @@ EXTERN struct schedproc {
+ 	endpoint_t parent;	/* parent endpoint id */
+ 	unsigned flags;		/* flag bits */
+ 
++	/* Fair scheduling */
++	pid_t procgrp;		/* process group */
++	unsigned proc_usage;
++	unsigned grp_usage;
++	unsigned fss_priority;
++
+ 	/* User space scheduling */
+ 	unsigned max_priority;	/* this process' highest allowed priority */
+ 	unsigned priority;		/* the process' current priority */
+diff --git a/servers/sched/schedule.c b/servers/sched/schedule.c
+index f949b0a..dc5e10c 100644
+--- a/servers/sched/schedule.c
++++ b/servers/sched/schedule.c
+@@ -23,16 +23,20 @@ FORWARD _PROTOTYPE( int schedule_process, (struct schedproc * rmp,
+ 			unsigned flags));
+ FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
+ 
+-#define SCHEDULE_CHANGE_PRIO	0x1
+-#define SCHEDULE_CHANGE_QUANTUM	0x2
+-#define SCHEDULE_CHANGE_CPU	0x4
++#define SCHEDULE_CHANGE_PRIO		0x1
++#define SCHEDULE_CHANGE_QUANTUM		0x2
++#define SCHEDULE_CHANGE_CPU		0x4
++#define SCHEDULE_CHANGE_FSS_PRIO	0x8
+ 
+ #define SCHEDULE_CHANGE_ALL	(	\
+ 		SCHEDULE_CHANGE_PRIO	|	\
+ 		SCHEDULE_CHANGE_QUANTUM	|	\
+-		SCHEDULE_CHANGE_CPU		\
++		SCHEDULE_CHANGE_CPU	|	\
++		SCHEDULE_CHANGE_FSS_PRIO	\
+ 		)
+ 
++#define SCHEDULE_FSS_BASE 	0
++
+ #define schedule_process_local(p)	\
+ 	schedule_process(p, SCHEDULE_CHANGE_PRIO | SCHEDULE_CHANGE_QUANTUM)
+ #define schedule_process_migrate(p)	\
+@@ -47,6 +51,8 @@ FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
+ /* processes created by RS are sysytem processes */
+ #define is_system_proc(p)	((p)->parent == RS_PROC_NR)
+ 
++#define is_fss_proc(p)		((p)->procgrp != -1 && (p)->flags & IN_USE)
++
+ PRIVATE unsigned cpu_proc[CONFIG_MAX_CPUS];
+ 
+ PRIVATE void pick_cpu(struct schedproc * proc)
+@@ -91,7 +97,8 @@ PRIVATE void pick_cpu(struct schedproc * proc)
+ PUBLIC int do_noquantum(message *m_ptr)
+ {
+ 	register struct schedproc *rmp;
+-	int rv, proc_nr_n;
++	struct schedproc *rmm;
++	int rv, proc_nr_n, other_nr_n;
+ 
+ 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
+ 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
+@@ -107,6 +114,32 @@ PUBLIC int do_noquantum(message *m_ptr)
+ 	if ((rv = schedule_process_local(rmp)) != OK) {
+ 		return rv;
+ 	}
++
++	if (!is_fss_proc(rmp)) {
++		return OK;
++	}
++
++	// fair scheduler
++	rmp->proc_usage += rmp->time_slice;
++
++	for (other_nr_n = 0, rmm = schedproc; other_nr_n < NR_PROCS; other_nr_n++, rmm++) {
++		if (!is_fss_proc(rmm)) {
++			continue;
++		}
++
++		if (rmm->procgrp == rmp->procgrp) {
++			rmm->grp_usage += rmp->time_slice;
++		}
++		rmm->fss_priority = (rmm->proc_usage / 2) + 
++			(rmm->grp_usage * get_groups_nr() / 4) +
++			SCHEDULE_FSS_BASE;
++
++		if ((rv = schedule_process(rmm, SCHEDULE_CHANGE_FSS_PRIO)) != OK) {
++			printf("SCHED: WARNING: failed to schedule %d (new fss_prio %u): %d\n",
++				rmm->endpoint, rmm->fss_priority, rv);
++			return rv;
++		}
++	}
+ 	return OK;
+ }
+ 
+@@ -164,6 +197,10 @@ PUBLIC int do_start_scheduling(message *m_ptr)
+ 	rmp->endpoint     = m_ptr->SCHEDULING_ENDPOINT;
+ 	rmp->parent       = m_ptr->SCHEDULING_PARENT;
+ 	rmp->max_priority = (unsigned) m_ptr->SCHEDULING_MAXPRIO;
++
++	// indicator that we should not fairly schedule this
++	rmp->procgrp      = -1;
++
+ 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
+ 		return EINVAL;
+ 	}
+@@ -207,8 +244,20 @@ PUBLIC int do_start_scheduling(message *m_ptr)
+ 				&parent_nr_n)) != OK)
+ 			return rv;
+ 
++		// indicator that we should fairly schedule this
++		rmp->procgrp = (pid_t) m_ptr->SCHEDULING_PROCGRP;
++
+ 		rmp->priority = schedproc[parent_nr_n].priority;
+ 		rmp->time_slice = schedproc[parent_nr_n].time_slice;
++		
++		/* fair scheduling */
++		rmp->proc_usage = 0;
++		rmp->grp_usage = get_group_usage(rmp->procgrp);
++
++		rmp->fss_priority = (rmp->proc_usage / 2) + 
++			(rmp->grp_usage * get_groups_nr() / 4) +
++			SCHEDULE_FSS_BASE;
++
+ 		break;
+ 		
+ 	default: 
+@@ -300,7 +349,7 @@ PUBLIC int do_nice(message *m_ptr)
+ PRIVATE int schedule_process(struct schedproc * rmp, unsigned flags)
+ {
+ 	int err;
+-	int new_prio, new_quantum, new_cpu;
++	int new_prio, new_quantum, new_cpu, new_fss_prio;
+ 
+ 	pick_cpu(rmp);
+ 
+@@ -319,8 +368,13 @@ PRIVATE int schedule_process(struct schedproc * rmp, unsigned flags)
+ 	else
+ 		new_cpu = -1;
+ 
++	if (flags & SCHEDULE_CHANGE_FSS_PRIO)
++		new_fss_prio = rmp->fss_priority;
++	else
++		new_fss_prio = -1;
++
+ 	if ((err = sys_schedule(rmp->endpoint, new_prio,
+-		new_quantum, new_cpu)) != OK) {
++		new_quantum, new_cpu, new_fss_prio)) != OK) {
+ 		printf("PM: An error occurred when trying to schedule %d: %d\n",
+ 		rmp->endpoint, err);
+ 	}
+diff --git a/servers/sched/utility.c b/servers/sched/utility.c
+index 6ffa6f8..5a340d5 100644
+--- a/servers/sched/utility.c
++++ b/servers/sched/utility.c
+@@ -73,3 +73,38 @@ PUBLIC int accept_message(message *m_ptr)
+ 	/* no other messages are allowable */
+ 	return 0;
+ }
++
++/*===========================================================================*
++ *				get_group_usage				     *
++ *===========================================================================*/
++PUBLIC unsigned get_group_usage(pid_t procgrp) {
++	int proc_nr_n;
++	struct schedproc *rmm;
++
++	for (proc_nr_n = 0, rmm = schedproc; proc_nr_n < NR_PROCS; proc_nr_n++, rmm++) {
++		if (rmm->procgrp == procgrp) {
++			return rmm->grp_usage;
++		}
++	}
++
++	return 0;
++}
++
++/*===========================================================================*
++ *				get_groups_nr				     *
++ *===========================================================================*/
++PUBLIC unsigned get_groups_nr(void) {
++	int proc_nr_n;
++	struct schedproc *rmm;
++	char groups[NR_PROCS] = { 0 };
++	unsigned ret = 0;
++
++	for (proc_nr_n = 0, rmm = schedproc; proc_nr_n < NR_PROCS; proc_nr_n++, rmm++) {
++		if (rmm->flags & IN_USE && !groups[rmm->procgrp]) {
++			groups[rmm->procgrp] = 1;
++			++ret;
++		}
++	}
++
++	return ret;
++}
